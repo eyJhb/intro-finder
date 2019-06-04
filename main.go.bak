@@ -1,0 +1,211 @@
+package main
+
+import (
+	"fmt"
+	"image"
+	_ "image/jpeg"
+	"intro-finder/hash"
+	"os"
+	"sort"
+)
+
+// ffmpeg -i in.mp4 -vf select='between(n\,x\,y)' -vsync 0 frames%d.png
+// ffmpeg -i S01E08.mp4 -t 00:05:00 -vsync 0 s01e08-5min/out%d.jpeg
+
+func worker(id int, jobs <-chan int, results chan<- frame) {
+	for j := range jobs {
+		if j%100 == 0 {
+			fmt.Printf("Doing job: %d\n", j)
+		}
+
+		dhash := hash.DHash(readFile(fmt.Sprintf("data/s01e05-5min/out%d.jpeg", j)))
+		res := frame{
+			hash:  dhash,
+			image: j,
+		}
+		results <- res
+	}
+}
+
+type frame struct {
+	hash  uint64
+	image int
+	diff  uint8
+}
+
+const (
+	numImages = 8992
+)
+
+type score struct {
+	start int
+	end   int
+	score int
+}
+
+func main() {
+	// filename1 := "out0020.jpeg"
+	// dhash1 := hash.DHash(readFile(filename1))
+
+	// setup our jobs and results
+	jobs := make(chan int, numImages)
+	results := make(chan frame, numImages)
+
+	// make our workers
+	for w := 0; w < 8; w++ {
+		go worker(w, jobs, results)
+	}
+
+	for j := 1; j <= numImages; j++ {
+		jobs <- j
+	}
+	close(jobs)
+
+	baseEpisode := []frame{}
+	for r := 1; r <= numImages; r++ {
+		baseEpisode = append(baseEpisode, <-results)
+	}
+
+	// fmt.Println("E06")
+	// fmt.Println(findIntro(baseEpisode, "data/s01e06-5min/out%d.jpeg"))
+	// fmt.Println("E07")
+	// fmt.Println(findIntro(baseEpisode, "data/s01e07-5min/out%d.jpeg"))
+	fmt.Println("E08")
+	fmt.Println(findIntro(baseEpisode, "data/s01e08-5min/out%d.jpeg"))
+	// fmt.Println("E09")
+	// fmt.Println(findIntro(baseEpisode, "data/s01e09-5min/out%d.jpeg"))
+
+}
+
+func findIntro(baseEpisode []frame, episodeDir string) score {
+	matches := []frame{}
+	blackFrames := []frame{}
+	// try to find some frames in the other stuff
+	for i := 1; i < (numImages / 5); i++ {
+		currentFrame := i * 5
+
+		if currentFrame > numImages {
+			fmt.Println("No more frames..")
+			break
+		}
+
+		// get hash for current file
+		filename := fmt.Sprintf(episodeDir, currentFrame)
+		dhash := hash.DHash(readFile(filename))
+		ahash := hash.AHash(readFile(filename))
+
+		if ahash == 0 {
+			blackFrames = append(blackFrames, frame{
+				hash:  ahash,
+				image: currentFrame,
+			})
+		}
+
+		// check it
+		for _, f := range baseEpisode {
+			diff := hash.Diff(f.hash, dhash)
+			if diff <= 3 {
+				// matches = append(matches, f)
+				matches = append(matches, frame{
+					hash:  dhash,
+					image: currentFrame,
+					diff:  diff,
+				})
+			}
+		}
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].image < matches[j].image
+	})
+
+	sort.Slice(blackFrames, func(i, j int) bool {
+		return blackFrames[i].image < blackFrames[j].image
+	})
+
+	for _, f := range blackFrames {
+		fmt.Printf("%+v\n", f)
+	}
+
+	fmt.Println(len(blackFrames))
+
+	scores := []score{}
+	scoreIndex := 0
+	safeRange := 100
+
+	for i, m := range matches {
+		if i+1 >= len(matches) {
+			break
+		}
+
+		if len(scores)-1 != scoreIndex {
+			scores = append(scores, score{
+				start: m.image,
+				end:   0,
+				score: 0,
+			})
+		}
+
+		if (matches[i+1].image - m.image) > safeRange {
+			scoreIndex++
+		} else {
+			scores[scoreIndex].end = m.image
+			scores[scoreIndex].score++
+		}
+
+		// if i%100 == 0 {
+		// 	fmt.Printf("%+v\n", m)
+		// }
+	}
+	fmt.Println("---")
+	for i := 0; i < 10; i++ {
+		fmt.Printf("%+v\n", matches[i])
+	}
+	fmt.Println("---score")
+	biggest := score{}
+	for i, s := range scores {
+		if s.score > biggest.score {
+			biggest = scores[i]
+		}
+	}
+	fmt.Printf("%+v\n", biggest)
+	// {start:6173 end:8242 score:3906} s01e05
+	// {start:5610 end:7700 score:3048} s01e06
+
+	return biggest
+}
+
+func main2() {
+	filename1 := "out0020.jpeg"
+	filename2 := "out0021.jpeg"
+
+	ahash1 := hash.AHash(readFile(filename1))
+	ahash2 := hash.AHash(readFile(filename2))
+	fmt.Println(hash.Diff(ahash1, ahash1))
+	fmt.Println(hash.Diff(ahash1, ahash2))
+
+	dhash1 := hash.DHash(readFile(filename1))
+	dhash2 := hash.DHash(readFile(filename2))
+	fmt.Println(hash.Diff(dhash1, dhash1))
+	fmt.Println(hash.Diff(dhash1, dhash2))
+
+	fmt.Println("vim-go")
+}
+
+func readFile(filename string) image.Image {
+	infile, err := os.Open(filename)
+	if err != nil {
+		panic(err.Error())
+	}
+	defer infile.Close()
+
+	// Must specifically use jpeg.Decode() or it
+	// would encounter unknown format error
+	src, _, err := image.Decode(infile)
+	if err != nil {
+		panic(err.Error())
+		return nil
+	}
+
+	return src
+}
